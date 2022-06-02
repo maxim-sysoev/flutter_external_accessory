@@ -3,26 +3,50 @@ import UIKit
 import ExternalAccessory
 
 public class SwiftFlutterExternalAccessoryPlugin: NSObject, FlutterPlugin {
-    private static let methodChannel = "flutter_external_accessory/method_channel"
-    private static let devicesListChannel = "flutter_external_accessory/devices_list_channel"
+    private static let _methodChannel = "flutter_external_accessory/method_channel"
+    private static let _devicesListChannel = "flutter_external_accessory/devices_list_channel"
+    private static let _messagesChannel = "flutter_external_accessory/messages_channel"
+    
+    /// Контроллер EventCannel'а для передачи найденных устройств
+    private let _devicesStreamHandler = DevicesListStreamHandler()
+    
+    /// Контроллер EventCannel'а для передачи полученных сообщений с устроств
+    private let _messagesStreamHandler = MessagesStreamHandler()
+    
+    /// Список активных сессий
+    private var _sessions: Array<SessionController> = []
     
     public static func register(with registrar: FlutterPluginRegistrar) {
-        let channel = FlutterMethodChannel(name: methodChannel, binaryMessenger: registrar.messenger())
-        let devicesChannel = FlutterEventChannel(name: devicesListChannel, binaryMessenger: registrar.messenger())
+        let channel = FlutterMethodChannel(name: _methodChannel, binaryMessenger: registrar.messenger())
+        let devicesChannel = FlutterEventChannel(name: _devicesListChannel, binaryMessenger: registrar.messenger())
+        let messagesChannel = FlutterEventChannel(name: _messagesChannel, binaryMessenger: registrar.messenger())
         let instance = SwiftFlutterExternalAccessoryPlugin()
         registrar.addMethodCallDelegate(instance, channel: channel)
-//        registrar.
+        devicesChannel.setStreamHandler(instance._devicesStreamHandler)
+        messagesChannel.setStreamHandler(instance._messagesStreamHandler)
     }
     
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch (call.method) {
-        case "initialize":
-            initializePlugin()
+        case "startScan":
+            startScanForDevices()
             result(nil)
             break
             
-        case "dispose":
-            dispose()
+        case "stopScan":
+            stopScanForDevices()
+            result(nil)
+            break
+            
+        case "connect":
+            connectToDevice(call, result: result)
+            break
+            
+        case "write":
+            sendDataToDevice(call, result: result)
+            break
+            
+        case "disconnet":
             result(nil)
             break
             
@@ -32,10 +56,10 @@ public class SwiftFlutterExternalAccessoryPlugin: NSObject, FlutterPlugin {
     }
     
     /**
-     Инициализация плагина.
+     Инициализация поиска.
      Запускает поиск устройств, устанавливает обработчики событий подключения устройств.
      */
-    public func initializePlugin() {
+    public func startScanForDevices() {
         NotificationCenter.default.addObserver(self,
                                                selector: #selector(_accessoryDidConnect),
                                                name: NSNotification.Name.EAAccessoryDidConnect,
@@ -48,28 +72,74 @@ public class SwiftFlutterExternalAccessoryPlugin: NSObject, FlutterPlugin {
         
         EAAccessoryManager.shared().registerForLocalNotifications()
         
-        
-        //        _eaSessionController = [EADSessionController sharedController];
-        _accessoryList = EAAccessoryManager.shared().connectedAccessories
+        _devicesStreamHandler.initDevicesList(EAAccessoryManager.shared().connectedAccessories)
     }
     
     /**
-     Завершение работы плагина.
+     Завершение поиска.
      Завершает поиск устройств, удаляет обработчики событий, завершает активные соединения.
      */
-    public func dispose() {
+    public func stopScanForDevices() {
         EAAccessoryManager.shared().unregisterForLocalNotifications()
         NotificationCenter.default.removeObserver(self, name: NSNotification.Name.EAAccessoryDidConnect, object: nil)
         NotificationCenter.default.removeObserver(self, name: NSNotification.Name.EAAccessoryDidDisconnect, object: nil)
         
-        _accessoryList = [];
+        _devicesStreamHandler.clearDevicesList()
         
-        // TODO: disconnect connected devices
+        // TODO: disconnect connected devices, mb not needed
     }
     
-    /// Список доступных устройств
-    private var _accessoryList: Array<EAAccessory> = [];
+    /**
+     Подключение к устройтсву для создания сессии.
+     */
+    public func connectToDevice(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let arguments = call.arguments as? [String: Any],
+              let connectionId = arguments["connectionId"] as? Int,
+              let protocolString = arguments["protocol"] as? String else {
+                  result(FlutterError(code: "ARGUMENTS_ERROR", message: "Provide all arguments", details: nil))
+                  return
+              }
+        
+        let accessories = EAAccessoryManager.shared().connectedAccessories
+        guard let accessory = accessories.first(where: {$0.connectionID == connectionId}) else {
+            result(FlutterError(code: "CONNECTION_ERROR", message: "Can't connect to device cause it not found", details: nil))
+            return
+        }
+        
+        guard let session = EASession.init(accessory: accessory, forProtocol: protocolString) else {
+            result(FlutterError(code: "CONNECTION_ERROR", message: "Session creation failed", details: nil))
+            return
+        }
+        
+        let controller = SessionController(session: session)
+        _sessions.append(controller)
+        
+        result(session.accessory?.connectionID)
+    }
     
+    /**
+     Подключение к устройтсву для создания сессии.
+     */
+    public func sendDataToDevice(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let arguments = call.arguments as? [String: Any],
+              let connectionId = arguments["connectionId"] as? Int,
+              let data = arguments["data"] as? [Int] else {
+                  result(FlutterError(code: "ARGUMENTS_ERROR", message: "Provide all arguments", details: nil))
+                  return
+              }
+        
+        guard let controller = _sessions.first(where: {$0.connectionID == connectionId}) else {
+            result(FlutterError(code: "SESSION_ERROR", message: "Can't active session with connection id = \(connectionId)", details: nil))
+            return
+        }
+        
+        
+        
+        let nsData = NSData.init(bytes: data.map{ val -> UInt8 in UInt8(val)}, length: data.count)
+        controller.writeData(nsData)
+        
+        result(nil)
+    }
     
     /**
      Функция обработки события подключения устройства. Добавляет девайс в список доступных.
@@ -83,7 +153,9 @@ public class SwiftFlutterExternalAccessoryPlugin: NSObject, FlutterPlugin {
             return
         }
         
-        _accessoryList.append(connectedAccessory)
+        _devicesStreamHandler.addDevice(connectedAccessory)
+        NSLog("connected accessory mac address: \(String(describing: connectedAccessory.value(forKey: "macAddress") as? String? ?? "no"))")
+        NSLog("%@", connectedAccessory);
     }
     
     /**
@@ -101,8 +173,6 @@ public class SwiftFlutterExternalAccessoryPlugin: NSObject, FlutterPlugin {
         
         // TODO: if disconnected accessory was connected, then needs drop connection
         
-        _accessoryList.removeAll { item in
-            return item.connectionID == disconnectedAccessory.connectionID;
-        }
+        _devicesStreamHandler.removeDevice(disconnectedAccessory)
     }
 }

@@ -1,4 +1,7 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter_external_accessory/controllers/device_connection_controller.dart';
 import 'package:flutter_external_accessory/flutter_external_accessory_method_channel.dart';
+import 'package:flutter_external_accessory/models/device_model/device_model.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
 abstract class FlutterExternalAccessoryPlatform extends PlatformInterface {
@@ -22,5 +25,11 @@ abstract class FlutterExternalAccessoryPlatform extends PlatformInterface {
   /// Constructs a FlutterExternalAccessoryPlatform.
   FlutterExternalAccessoryPlatform() : super(token: _token);
 
-  Future<String?> getPlatformVersion();
+  /// Поиск устройств для подключения
+  Stream<List<DeviceModel>> scanDevices();
+
+  Future<DeviceConnectionController> connectDevice(int connectionId, String protocol);
+
+  @protected
+  Future<void> writeData(int connectionId, List<int> bytes);
 }

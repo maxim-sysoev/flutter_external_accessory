@@ -13,19 +13,38 @@ import ExternalAccessory
  Объект для хранения и отправки в Flutter данных об устройсвах, доступных к подключению.
  */
 class DevicesListStreamHandler : NSObject, FlutterStreamHandler {
-    private var _sink: FlutterEventSink?
-    
     /// Список доступных устройств
-    var devicesList: Array<EAAccessory> = [];
+    public var devicesList: Array<EAAccessory> = []
+    
+    private var _sink: FlutterEventSink?
     
     func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
         _sink = events
-        
+        _syncDevices()
+        return nil
     }
     
     func onCancel(withArguments arguments: Any?) -> FlutterError? {
-        <#code#>
         _sink = nil
+        return nil
+    }
+    
+    /**
+     Проинициализировать список устройств при начале поиска.
+     
+     - Parameter devices: Начальный список усройтсв
+     */
+    public func initDevicesList(_ devices: Array<EAAccessory>) {
+        devicesList = devices
+        _syncDevices()
+    }
+    
+    /**
+     Очистка списка устройств при завершении поиска.
+     */
+    public func clearDevicesList() {
+        devicesList = []
+        _syncDevices()
     }
     
     /**
@@ -33,8 +52,9 @@ class DevicesListStreamHandler : NSObject, FlutterStreamHandler {
      
      - Parameter device: Устройство которое надо добавить.
      */
-    func addDevice(_ device: EAAccessory) {
+    public func addDevice(_ device: EAAccessory) {
         devicesList.append(device)
+        _syncDevices()
     }
     
     
@@ -43,7 +63,12 @@ class DevicesListStreamHandler : NSObject, FlutterStreamHandler {
      
      - Parameter device: Устройство которое надо удалить.
      */
-    func removeDevice(_ device: EAAccessory) {
+    public func removeDevice(_ device: EAAccessory) {
         devicesList.removeAll(where: { $0.connectionID == device.connectionID})
+        _syncDevices()
+    }
+    
+    private func _syncDevices() {
+        _sink?(devicesList.map { DeviceModel.fromFramework($0).toDto()})
     }
 }
